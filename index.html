@@ -440,10 +440,14 @@ function screenResult() {
   app.innerHTML = `<h2>Твой вайб ✨</h2><div class="tags" style="padding:4px 0">${chips}</div>
     <div class="grid">${res.map(x => `<div class="item ${x.photo.id === selectedPhoto ? 'sel' : ''}" data-id="${esc(x.photo.id)}"><img src="${esc(x.photo.url)}" alt="">
       <div class="tags">${Object.values(x.photo.tags).map(t => `<span class="tag">${esc(tagName(t))}</span>`).join('')}</div></div>`).join('')}</div>
-    <div class="col"><button class="btn" id="book" ${selectedPhoto ? '' : 'disabled'}>Хочу такое — записаться</button>
+    <label class="consent" style="display:flex;gap:8px;align-items:flex-start;font-size:13px;line-height:1.35;opacity:.85;margin:4px 0 10px"><input type="checkbox" id="consent" style="margin-top:2px;flex:none"><span>Согласна(ен), что мастер получит моё имя и ссылку на профиль Telegram и выбранный маникюр, чтобы связаться со мной по записи.</span></label>
+    <div class="col"><button class="btn" id="book" disabled>Хочу такое — записаться</button>
     <button class="btn sec" id="nope">Не то</button><button class="link" id="again">Начать сначала</button></div>`;
   app.querySelectorAll('.item').forEach(i => i.onclick = () => { selectedPhoto = i.dataset.id; screenResult(); });
-  document.getElementById('book').onclick = book;
+  const bookBtn = document.getElementById('book'), consentBox = document.getElementById('consent');
+  const syncBook = () => { bookBtn.disabled = !(selectedPhoto && consentBox.checked); };
+  consentBox.checked = consentGiven; consentBox.onchange = () => { consentGiven = consentBox.checked; syncBook(); }; syncBook();
+  bookBtn.onclick = book;
   document.getElementById('nope').onclick = screenReject;
   document.getElementById('again').onclick = restart;
 }
@@ -462,8 +466,9 @@ function screenReject() {
   redo.onclick = () => { track('reject', { tags: [...sel] }); E.reject(st, [...sel], cfg); saveState(); selectedPhoto = null; step(); };
   document.getElementById('back').onclick = screenResult;
 }
+let consentGiven = false; // согласие действует только в этой сессии и нигде не сохраняется
 async function book() {
-  const p = byId(selectedPhoto); if (!p) return;
+  const p = byId(selectedPhoto); if (!p || !consentGiven) return;
   if (API_URL) {
     const b = document.getElementById('book'); b.disabled = true; b.textContent = 'Отправляем…';
     try { await A('book', { photo_id: p.id }); screenBooked(); }
@@ -515,7 +520,7 @@ const ADMIN = {
   },
   async bookings(pane) {
     const bk = (await A('admin_bookings')).bookings, ST = ['новая', 'подтверждена', 'выполнена', 'отмена'];
-    pane.innerHTML = bk.length ? bk.map(b => `<div class="row"><span>${userLabel(b)}<small>${esc(b['Теги'])} · ${fmtDate(b['Время'])}</small></span>
+    pane.innerHTML = bk.length ? bk.map(b => `<div class="row"><span>${userLabel(b)} <a href="${b['Username'] ? 'https://t.me/' + esc(b['Username']) : 'tg://user?id=' + esc(b.tg_id)}" target="_blank" rel="noopener">написать ↗</a><small>${esc(b['Теги'])} · ${fmtDate(b['Время'])}</small></span>
       <select data-row="${b._row}">${ST.map(x => `<option ${x === b['Статус'] ? 'selected' : ''}>${x}</option>`).join('')}</select></div>`).join('') : '<p>Заявок пока нет</p>';
     pane.querySelectorAll('select').forEach(sel => sel.onchange = async () => { try { await A('admin_booking_status', { row: Number(sel.dataset.row), status: sel.value }); toast('Статус обновлён'); } catch (e) { toast(e.message); } });
   },
