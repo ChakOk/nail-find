@@ -249,7 +249,7 @@ const E = window.NailEngine; let cfg = CONFIG;
 const tg = window.Telegram && window.Telegram.WebApp;
 if (tg) { try { tg.ready(); tg.expand(); } catch (e) {} }
 const app = document.getElementById('app');
-let photos = [], st = null, busy = false, selectedPhoto = null, isAdmin = false, lastTracked = '';
+let photos = [], st = null, busy = false, selectedPhoto = null, isAdmin = false, lastTracked = '', bookingUrl = '';
 
 /* ================= УТИЛИТЫ ================= */
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -452,8 +452,10 @@ function screenResult() {
   document.getElementById('again').onclick = restart;
 }
 function screenBooked() {
-  app.innerHTML = `<div class="center"><div style="font-size:56px">✅</div><h1>Заявка отправлена</h1><p>Мастер получил ваш выбор и свяжется с вами, чтобы согласовать время.</p>
-    <div class="col" style="width:100%"><button class="btn sec" id="back">Вернуться к подборке</button></div></div>`;
+  app.innerHTML = `<div class="center"><div style="font-size:56px">✅</div><h1>Выбор отправлен мастеру</h1><p>${bookingUrl ? 'Мастер уже знает, какой маникюр вы выбрали. Осталось выбрать удобное время.' : 'Мастер получил ваш выбор и свяжется с вами, чтобы согласовать время.'}</p>
+    <div class="col" style="width:100%">${bookingUrl ? '<button class="btn" id="slot">📅 Выбрать время</button>' : ''}<button class="btn sec" id="back">Вернуться к подборке</button></div></div>`;
+  const slot = document.getElementById('slot');
+  if (slot) slot.onclick = () => { if (tg && tg.openLink) tg.openLink(bookingUrl); else window.open(bookingUrl, '_blank', 'noopener'); };
   document.getElementById('back').onclick = screenResult;
 }
 function screenReject() {
@@ -471,7 +473,7 @@ async function book() {
   const p = byId(selectedPhoto); if (!p || !consentGiven) return;
   if (API_URL) {
     const b = document.getElementById('book'); b.disabled = true; b.textContent = 'Отправляем…';
-    try { await A('book', { photo_id: p.id }); screenBooked(); }
+    try { const r = await A('book', { photo_id: p.id }); if (r.bookingUrl) bookingUrl = r.bookingUrl; screenBooked(); }
     catch (e) { toast('Не удалось отправить заявку: ' + e.message); b.disabled = false; b.textContent = 'Хочу такое — записаться'; }
     return;
   }
@@ -576,7 +578,7 @@ document.addEventListener('keydown', e => {
   if (API_URL) {
     if (!(tg && tg.initData)) { app.innerHTML = '<div class="center"><div style="font-size:48px">📱</div><h2>Откройте приложение в Telegram</h2><p>Эта страница работает только внутри бота.</p></div>'; return; }
     try {
-      const r = await A('catalog'); cfg = r.config; photos = r.photos; isAdmin = !!r.isAdmin;
+      const r = await A('catalog'); cfg = r.config; photos = r.photos; isAdmin = !!r.isAdmin; bookingUrl = r.bookingUrl || '';
       if (photos.length < 5 && !isAdmin) throw new Error('база фото пока пуста');
     } catch (e) {
       app.innerHTML = '<div class="center"><h2>Не удалось загрузить</h2><p>' + esc(e.message) + '</p><button class="btn" onclick="location.reload()">Повторить</button></div>'; return;
