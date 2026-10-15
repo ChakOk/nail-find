@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Подбор маникюра</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{
+  --bg:var(--tg-theme-bg-color,#fff); --text:var(--tg-theme-text-color,#1c1c1e);
+  --hint:var(--tg-theme-hint-color,#8e8e93); --btn:var(--tg-theme-button-color,#e0457b);
+  --btntext:var(--tg-theme-button-text-color,#fff); --card:var(--tg-theme-secondary-bg-color,#f4f4f6);
+  --yes:#2fbf71; --no:#f0506e;
+}
+@media (prefers-color-scheme:dark){:root{--bg:var(--tg-theme-bg-color,#17171a);--text:var(--tg-theme-text-color,#f2f2f5);--card:var(--tg-theme-secondary-bg-color,#25252a)}}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;overscroll-behavior:none}
+#app{max-width:520px;margin:0 auto;height:100%;display:flex;flex-direction:column;padding:12px 16px calc(12px + env(safe-area-inset-bottom,0px));padding-top:calc(12px + env(safe-area-inset-top,0px))}
+h1{font-size:24px;margin:8px 0}h2{font-size:20px;margin:4px 0 2px}p{margin:6px 0;color:var(--hint);line-height:1.4}
+.center{flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;gap:10px}
+.btn{border:0;border-radius:14px;padding:14px 20px;font-size:16px;font-weight:600;background:var(--btn);color:var(--btntext);width:100%;cursor:pointer}
+.btn.sec{background:var(--card);color:var(--text)} .btn:disabled{opacity:.4}
+.link{background:none;border:0;color:var(--hint);font-size:14px;padding:8px;cursor:pointer}
+.top{display:flex;align-items:center;gap:10px;font-size:13px;color:var(--hint)}
+.bar{flex:1;height:6px;border-radius:3px;background:var(--card);overflow:hidden}.bar i{display:block;height:100%;background:var(--btn);transition:width .3s}
+.stage{flex:1;position:relative;margin:10px 0;min-height:0}
+.card{position:absolute;inset:0;border-radius:22px;overflow:hidden;background:var(--card);touch-action:none;user-select:none;box-shadow:0 8px 24px rgba(0,0,0,.15);transition:transform .22s}
+.card.drag{transition:none}.card img{width:100%;height:100%;object-fit:cover;pointer-events:none;display:block}
+.stamp{position:absolute;top:22px;padding:4px 12px;border:3px solid;border-radius:10px;font-weight:800;font-size:22px;opacity:0;transform:rotate(-12deg)}
+.stamp.y{left:18px;color:var(--yes)}.stamp.n{right:18px;color:var(--no);transform:rotate(12deg)}
+.btns{display:flex;justify-content:center;gap:28px;padding:4px 0}
+.round{width:64px;height:64px;border-radius:50%;border:0;font-size:28px;background:var(--card);cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,.12)}
+.round.y{color:var(--yes)}.round.n{color:var(--no)}
+.duel{flex:1;display:flex;flex-direction:column;gap:10px;margin:10px 0;min-height:0}
+.duel .opt{flex:1;border-radius:20px;overflow:hidden;background:var(--card);cursor:pointer;min-height:0;box-shadow:0 6px 18px rgba(0,0,0,.12)}
+.duel img{width:100%;height:100%;object-fit:cover;display:block}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;overflow:auto;flex:1;align-content:start;grid-auto-rows:max-content;margin:8px 0}
+.item{background:var(--card);border-radius:16px;overflow:hidden;border:3px solid transparent;cursor:pointer}
+.item.sel{border-color:var(--btn)}.item img{width:100%;aspect-ratio:3/4;object-fit:cover;display:block}
+.tags{display:flex;flex-wrap:wrap;gap:4px;padding:6px}.tag{font-size:11px;background:var(--bg);border-radius:8px;padding:2px 7px;color:var(--hint)}
+.chips{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin:12px 0}
+.chip{padding:10px 16px;border-radius:20px;background:var(--card);border:2px solid transparent;font-size:15px;cursor:pointer}
+.chip.sel{border-color:var(--no);color:var(--no)}
+.col{display:flex;flex-direction:column;gap:8px}
+.toast{position:fixed;left:16px;right:16px;bottom:24px;background:var(--text);color:var(--bg);padding:12px 16px;border-radius:12px;font-size:14px;z-index:9;word-break:break-word}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+/* Движок подбора маникюра. Работает и в браузере (window.NailEngine), и в Node.
+   Без нейросети, без сети — только логика. */
+(function (root) {
+  'use strict';
+
+  function tagMap(cfg) { // tagId -> categoryId
+    const m = {};
+    cfg.categories.forEach(c => c.tags.forEach(t => { m[t.id] = c.id; }));
+    return m;
+  }
+  function photoTags(p) { return Object.values(p.tags); }
+
+  function createState(now) {
+    return { scores: {}, dislikes: {}, shown: {}, seen: [], won: {}, blacklist: [],
+             swipes: 0, lastActive: now == null ? Date.now() : now };
+  }
+  function isExpired(st, cfg, now) {
+    return (now || Date.now()) - st.lastActive > cfg.params.resetDays * 86400000;
+  }
+  const NONE = '__none__';
+  const sc = (st, t) => st.scores[t] || 0;
+
+  function eligible(st, photos) {
+    const bl = new Set(st.blacklist);
+    return photos.filter(p => !photoTags(p).some(t => bl.has(t)));
+  }
+  function availableTags(st, photos, cat) {
+    const set = new Set();
+    eligible(st, photos).forEach(p => { if (p.tags[cat.id]) set.add(p.tags[cat.id]); });
+    return cat.tags.map(t => t.id).filter(t => set.has(t));
+  }
+  function ranking(st, photos, cat) {
+    return availableTags(st, photos, cat).sort((a, b) =>
+      (sc(st, b) - sc(st, a)) ||
+      ((st.dislikes[a] || 0) - (st.dislikes[b] || 0)) ||
+      ((st.shown[a] || 0) - (st.shown[b] || 0)));
+  }
+
+  // Проверка побед по категориям
+  function settle(st, photos, cfg, force) {
+    const { threshold, margin } = cfg.params;
+    cfg.categories.forEach(cat => {
+      if (st.won[cat.id]) return;
+      const r = ranking(st, photos, cat);
+      if (!r.length) { st.won[cat.id] = NONE; return; } // в категории не осталось тегов — пропускаем
+      
+      const lead = r[0], second = r[1];
+      if (r.length === 1 || (sc(st, lead) >= threshold && sc(st, lead) - sc(st, second) >= margin) || force) {
+        st.won[cat.id] = lead;
+      }
+    });
+  }
+
+  function openCats(st, cfg) { return cfg.categories.filter(c => !st.won[c.id]); }
+
+  // Лидер категории, если она ещё не выиграна, иначе выигранный тег
+  function leaderOf(st, photos, cat) { return st.won[cat.id] || ranking(st, photos, cat)[0]; }
+
+  function nextCard(st, photos, cfg) {
+    const pool = eligible(st, photos);
+    const seen = new Set(st.seen);
+    settle(st, photos, cfg);
+    if (!openCats(st, cfg).length) return { type: 'done' };
+    if (st.swipes >= cfg.params.maxSwipes) { settle(st, photos, cfg, true); return { type: 'done' }; }
+
+    // Фаза 1: покрыть все теги хотя бы один раз
+    const open = openCats(st, cfg);
+    const covered = new Set();
+    pool.forEach(p => { if (seen.has(p.id)) photoTags(p).forEach(t => covered.add(t)); });
+    const wanted = new Set();
+    open.forEach(c => availableTags(st, photos, c).forEach(t => { if (!covered.has(t)) wanted.add(t); }));
+    if (wanted.size) {
+      let best = null, bestN = 0;
+      pool.forEach(p => {
+        if (seen.has(p.id)) return;
+        const n = open.reduce((a, c) => a + (wanted.has(p.tags[c.id]) ? 1 : 0), 0);
+        if (n > bestN) { best = p; bestN = n; }
+      });
+      if (best) return { type: 'single', phase: 1, photo: best };
+    }
+
+    // Фаза 2: проверяем самую перспективную незавершённую категорию
+    const cand = open
+      .map(c => ({ c, r: ranking(st, photos, c) }))
+      .filter(x => x.r.length)
+      .sort((a, b) => sc(st, b.r[0]) - sc(st, a.r[0]));
+    for (const { c, r } of cand) {
+      const lead = r[0], second = r[1];
+      const others = cfg.categories.filter(x => x.id !== c.id);
+      const ctrl = (p) => others.reduce((a, o) => a + (p.tags[o.id] && p.tags[o.id] === leaderOf(st, photos, o) ? 1 : 0), 0);
+
+      // Фаза 3: поединок, если порог достигнут, но отрыв мал
+      if (sc(st, lead) >= cfg.params.threshold) {
+        let bestPair = null, bestS = -1e9;
+        const A = pool.filter(p => p.tags[c.id] === lead), B = pool.filter(p => p.tags[c.id] === second);
+        A.forEach(a => B.forEach(b => {
+          const same = others.reduce((n, o) => n + (a.tags[o.id] === b.tags[o.id] ? 1 : 0), 0);
+          const s = same * 10 + ctrl(a) + ctrl(b) - (seen.has(a.id) ? 3 : 0) - (seen.has(b.id) ? 3 : 0);
+          if (s > bestS) { bestS = s; bestPair = [a, b]; }
+        }));
+        if (bestPair) return { type: 'duel', phase: 3, cat: c.id, a: bestPair[0], b: bestPair[1] };
+        st.won[c.id] = lead; // нечем сравнивать — берём лидера
+        continue;
+      }
+      // одиночный тест лидера с контрольными тегами
+      let best = null, bestS = -1;
+      pool.forEach(p => {
+        if (seen.has(p.id) || p.tags[c.id] !== lead) return;
+        const s = ctrl(p);
+        if (s > bestS) { best = p; bestS = s; }
+      });
+      if (best) return { type: 'single', phase: 2, cat: c.id, photo: best };
+      st.won[c.id] = lead; // фото закончились — берём лидера
+    }
+    return nextCard(st, photos, cfg);
+  }
+
+  function answer(st, card, ans, photos, cfg, now) {
+    const { likeWeight, dislikeWeight } = cfg.params;
+    const tm = tagMap(cfg);
+    const bump = (p, delta, dis) => photoTags(p).forEach(t => {
+      if (st.won[tm[t]]) return; // выигранные категории заблокированы
+      st.scores[t] = Math.max(0, sc(st, t) + delta);
+      if (dis) st.dislikes[t] = (st.dislikes[t] || 0) + 1;
+    });
+    const mark = p => { st.seen.push(p.id); photoTags(p).forEach(t => { st.shown[t] = (st.shown[t] || 0) + 1; }); };
+    if (card.type === 'single') {
+      mark(card.photo);
+      if (cfg.params.model === 'logistic') {
+        // онлайн-логистическая регрессия: вес тега = вклад в вероятность лайка
+        const ts = photoTags(card.photo), y = ans === 'like' ? 1 : 0;
+        let z = st.bias || 0; ts.forEach(t => { z += sc(st, t); });
+        const err = y - 1 / (1 + Math.exp(-z)), lr = cfg.params.lr || 0.6;
+        ts.forEach(t => { st.scores[t] = sc(st, t) + lr * err; if (!y) st.dislikes[t] = (st.dislikes[t] || 0) + 1; });
+        st.bias = (st.bias || 0) + 0.3 * lr * err;
+      } else if (ans === 'like') bump(card.photo, likeWeight, false); else bump(card.photo, -dislikeWeight, true);
+    } else if (card.type === 'duel') {
+      const win = ans === 'a' ? card.a : card.b, lose = ans === 'a' ? card.b : card.a;
+      [card.a, card.b].forEach(p => { if (!st.seen.includes(p.id)) mark(p); });
+      const wt = win.tags[card.cat], lt = lose.tags[card.cat];
+      const lg = cfg.params.model === 'logistic', st_ = lg ? (cfg.params.lr || 0.6) : likeWeight;
+      st.scores[wt] = sc(st, wt) + st_;
+      st.scores[lt] = lg ? sc(st, lt) - st_ : Math.max(0, sc(st, lt) - dislikeWeight);
+      st.dislikes[lt] = (st.dislikes[lt] || 0) + 1;
+    }
+    st.swipes++; st.lastActive = now || Date.now();
+    settle(st, photos, cfg);
+  }
+
+  function results(st, photos, cfg) {
+    const wonCats = Object.keys(st.won);
+    return eligible(st, photos).map(p => {
+      let match = 0, miss = 0;
+      wonCats.forEach(c => { if (p.tags[c] === st.won[c]) match++; else if (p.tags[c]) miss++; });
+      return { photo: p, match, miss };
+    }).sort((a, b) => (b.match - a.match) || (a.miss - b.miss))
+      .slice(0, cfg.params.resultCount);
+  }
+
+  // Клиент отказался: отмечает теги, которые не понравились
+  function reject(st, tagIds, cfg, now) {
+    const tm = tagMap(cfg);
+    tagIds.forEach(t => {
+      if (!st.blacklist.includes(t)) st.blacklist.push(t);
+      const cat = tm[t];
+      delete st.won[cat];
+      cfg.categories.find(c => c.id === cat).tags.forEach(x => { st.scores[x.id] = 0; });
+    });
+    st.lastActive = now || Date.now();
+  }
+
+  const api = { NONE, createState, nextCard, answer, results, reject, isExpired, settle };
+  if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.NailEngine = api;
+})(typeof window !== 'undefined' ? window : this);
+
+</script>
+<script>
+(function () {
+'use strict';
+/* ================= НАСТРОЙКИ ================= */
+const CONFIG = {"categories": [{"id": "shape", "name": "Форма", "tags": [{"id": "soft_square", "name": "Мягкий квадрат"}, {"id": "sharp_square", "name": "Чёткий квадрат"}, {"id": "squoval", "name": "Скво овал"}, {"id": "oval", "name": "Овал"}, {"id": "almond", "name": "Миндаль"}, {"id": "stiletto", "name": "Стилет"}, {"id": "ballerina", "name": "Баллерина"}]}, {"id": "color", "name": "Цвет", "tags": [{"id": "nude", "name": "Нюд"}, {"id": "glitter", "name": "Блестки"}, {"id": "bright", "name": "Яркий"}, {"id": "dark", "name": "Тёмный"}, {"id": "pastel", "name": "Пастельный"}]}, {"id": "design", "name": "Дизайн", "tags": [{"id": "french", "name": "Френч"}, {"id": "rubbing", "name": "Втирка"}, {"id": "cat_eye", "name": "Кошачий глаз"}, {"id": "minimal", "name": "Минимализм"}, {"id": "marble", "name": "Мрамор"}, {"id": "patal", "name": "Паталь"}, {"id": "handpaint", "name": "От руки"}, {"id": "gradient", "name": "Градиент"}, {"id": "drops", "name": "Капли"}]}], "params": {"threshold": 4, "margin": 2, "likeWeight": 1, "dislikeWeight": 1, "resultCount": 4, "maxSwipes": 60, "resetDays": 14}};
+// Ссылка на опубликованную Google Таблицу (Файл → Поделиться → Опубликовать → CSV). Пока пусто — работает демо.
+// Колонки: id | ссылка | <названия категорий: Форма, Цвет, Дизайн...> | статус (ок / на проверку)
+const SHEET_CSV_URL = '';
+const DEMO_COUNT = 60;
+const STORAGE_KEY = 'nail_state_v1';
+
+const E = window.NailEngine, cfg = CONFIG;
+const tg = window.Telegram && window.Telegram.WebApp;
+if (tg) { try { tg.ready(); tg.expand(); } catch (e) {} }
+const app = document.getElementById('app');
+let photos = [], st = null, busy = false, selectedPhoto = null;
+
+/* ================= УТИЛИТЫ ================= */
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const tagName = id => { for (const c of cfg.categories) for (const t of c.tags) if (t.id === id) return t.name; return id; };
+function toast(msg) { const d = document.createElement('div'); d.className = 'toast'; d.textContent = msg; document.body.appendChild(d); setTimeout(() => d.remove(), 4500); }
+function mulberry(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+/* ================= ХРАНИЛИЩЕ СОСТОЯНИЯ ================= */
+function loadState() {
+  return new Promise(resolve => {
+    const fromLocal = () => { try { const s = localStorage.getItem(STORAGE_KEY); resolve(s ? JSON.parse(s) : null); } catch (e) { resolve(null); } };
+    if (tg && tg.CloudStorage) {
+      try { tg.CloudStorage.getItem(STORAGE_KEY, (err, v) => { if (!err && v) { try { resolve(JSON.parse(v)); return; } catch (e) {} } fromLocal(); }); return; } catch (e) {}
+    }
+    fromLocal();
+  });
+}
+function saveState() {
+  const s = JSON.stringify(st);
+  try { localStorage.setItem(STORAGE_KEY, s); } catch (e) {}
+  if (tg && tg.CloudStorage && s.length < 4000) { try { tg.CloudStorage.setItem(STORAGE_KEY, s); } catch (e) {} }
+}
+
+/* ================= ДАННЫЕ: Google Таблица или демо ================= */
+function parseCSV(text) {
+  const rows = []; let row = [], cur = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (q) { if (ch === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += ch; }
+    else if (ch === '"') q = true;
+    else if (ch === ',') { row.push(cur); cur = ''; }
+    else if (ch === '\n') { row.push(cur); rows.push(row); row = []; cur = ''; }
+    else if (ch !== '\r') cur += ch;
+  }
+  if (cur !== '' || row.length) { row.push(cur); rows.push(row); }
+  return rows;
+}
+async function loadFromSheet(url) {
+  const res = await fetch(url); if (!res.ok) throw new Error('HTTP ' + res.status);
+  const rows = parseCSV(await res.text()); const head = rows[0].map(h => h.trim().toLowerCase());
+  const col = names => head.findIndex(h => names.includes(h));
+  const iId = col(['id', 'ид']), iUrl = col(['ссылка', 'url', 'картинка']), iSt = col(['статус', 'status']);
+  const catCols = cfg.categories.map(c => ({ c, i: head.indexOf(c.name.toLowerCase()) }));
+  const out = [];
+  rows.slice(1).forEach((r, n) => {
+    const url = (r[iUrl] || '').trim(); if (!url) return;
+    if (iSt >= 0) { const s = (r[iSt] || '').trim().toLowerCase(); if (!['ок', 'ok', 'да', 'yes'].includes(s)) return; }
+    const tags = {};
+    catCols.forEach(({ c, i }) => {
+      if (i < 0) return; const v = (r[i] || '').trim().toLowerCase(); if (!v) return;
+      const t = c.tags.find(t => t.name.toLowerCase() === v || t.id === v);
+      if (t) tags[c.id] = t.id; else console.warn('Неизвестный тег:', v, 'в строке', n + 2);
+    });
+    if (Object.keys(tags).length) out.push({ id: iId >= 0 && r[iId] ? r[iId].trim() : 'r' + (n + 1), url, tags });
+  });
+  return out;
+}
+
+/* ===== демо-картинки (рисуем сами, пока нет реальной базы) ===== */
+const PATHS = {
+  soft_square: 'L210,150 Q210,120 180,120 L120,120 Q90,120 90,150 Z',
+  sharp_square: 'L210,126 Q210,120 204,120 L96,120 Q90,120 90,126 Z',
+  squoval: 'L210,170 Q210,120 160,120 L140,120 Q90,120 90,170 Z',
+  oval: 'L210,200 Q210,100 150,100 Q90,100 90,200 Z',
+  almond: 'L208,240 C200,140 175,80 150,50 C125,80 100,140 92,240 Z',
+  stiletto: 'L205,260 C190,170 160,80 150,25 C140,80 110,170 95,260 Z',
+  ballerina: 'L205,300 L180,70 Q178,60 168,60 L132,60 Q122,60 120,70 L95,300 Z'
+};
+const TOP = { soft_square: 120, sharp_square: 120, squoval: 120, oval: 100, almond: 50, stiletto: 25, ballerina: 60 };
+const PAL = {
+  nude: ['#e9c6aa', '#dfb597', '#efd0b8'], bright: ['#ff2d75', '#ff7a00', '#1fb6ff', '#7ed321', '#b517ff', '#ff3b30'],
+  dark: ['#2a2230', '#1c1c24', '#3a1f2b', '#16253a'], pastel: ['#cdb8ee', '#b8e0d2', '#f7c8d8', '#c7dcf5', '#fbe6a2'],
+  glitter: ['#e0c3ff', '#f6d6a8', '#c9e7ff']
+};
+function nailSvg(p) {
+  const r = mulberry(String(p.id).split('').reduce((a, c) => a * 31 + c.charCodeAt(0), 7));
+  const shape = p.tags.shape || ['soft_square', 'oval', 'almond', 'ballerina'][Math.floor(r() * 4)];
+  const colTag = p.tags.color || 'nude', pal = PAL[colTag] || PAL.nude, base = pal[Math.floor(r() * pal.length)];
+  const design = p.tags.design, top = TOP[shape], path = 'M90,350 Q90,370 110,370 L190,370 Q210,370 210,350 ' + PATHS[shape];
+  const hue = Math.floor(r() * 360);
+  let d = '';
+  if (colTag === 'glitter') for (let i = 0; i < 45; i++) d += `<circle cx="${90 + r() * 120}" cy="${top + r() * (370 - top)}" r="${1 + r() * 2.5}" fill="#fff" opacity="${.5 + r() * .5}"/>`;
+  if (design === 'french') d += `<path d="M80,${top - 10} H220 V${top + 50} Q150,${top + 80} 80,${top + 50} Z" fill="#fff"/>`;
+  if (design === 'rubbing') d += `<rect x="80" y="${top}" width="140" height="${370 - top}" fill="url(#rub)" opacity=".6"/>`;
+  if (design === 'cat_eye') d += `<polygon points="115,${top + 30} 150,${top + 20} 120,360 100,360" fill="url(#cat)" opacity=".75"/>`;
+  if (design === 'minimal') d += `<path d="M105,${top + 80} Q150,${top + 40} 195,${top + 90}" stroke="#222" stroke-width="2.5" fill="none"/><circle cx="170" cy="${top + 120}" r="4" fill="#222"/>`;
+  if (design === 'marble') for (let i = 0; i < 6; i++) d += `<path d="M80,${top + r() * 250} q30,${-30 + r() * 60} 60,0 t70,${-20 + r() * 40}" stroke="${i % 2 ? '#fff' : '#777'}" stroke-width="${1 + r() * 2}" fill="none" opacity=".6"/>`;
+  if (design === 'patal') for (let i = 0; i < 14; i++) { const x = 90 + r() * 110, y = top + r() * (360 - top); d += `<polygon points="${x},${y} ${x + 10},${y + 3} ${x + 6},${y + 12}" fill="#e6b84a" opacity=".9"/>`; }
+  if (design === 'handpaint') d += `<path d="M105,${top + 90} q15,-40 30,0 t30,0 t30,0" stroke="#fff" stroke-width="3" fill="none"/><circle cx="150" cy="${top + 150}" r="8" fill="#ff5c8a"/><path d="M150,${top + 158} v30" stroke="#3a9d5d" stroke-width="3"/>`;
+  if (design === 'gradient') d += `<rect x="80" y="${top}" width="140" height="${370 - top}" fill="url(#grad)"/>`;
+  if (design === 'drops') for (let i = 0; i < 8; i++) { const x = 105 + r() * 90, y = top + 20 + r() * (320 - top), rr = 5 + r() * 8; d += `<circle cx="${x}" cy="${y}" r="${rr}" fill="#fff" opacity=".85"/><circle cx="${x - rr / 3}" cy="${y - rr / 3}" r="${rr / 4}" fill="#fff"/>`; }
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 400"><defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="hsl(${hue},60%,92%)"/><stop offset="1" stop-color="hsl(${(hue + 40) % 360},55%,82%)"/></linearGradient>
+    <linearGradient id="rub" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff9ee0"/><stop offset=".5" stop-color="#9ef0ff"/><stop offset="1" stop-color="#d6a8ff"/></linearGradient>
+    <linearGradient id="cat" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset=".5" stop-color="#fff"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+    <linearGradient id="grad" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#ff8fb8"/></linearGradient>
+    <clipPath id="n"><path d="${path}"/></clipPath></defs>
+    <rect width="300" height="400" fill="url(#bg)"/>
+    <rect x="68" y="${Math.max(top + 120, 250)}" width="164" height="200" rx="60" fill="#f1d3c1"/>
+    <path d="${path}" fill="${base}"/><g clip-path="url(#n)">${d}</g>
+    <path d="${path}" fill="none" stroke="rgba(0,0,0,.12)" stroke-width="2"/></svg>`;
+  return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+}
+function makeDemo(n) {
+  const r = mulberry(2026), seen = new Set(), out = [];
+  while (out.length < n) {
+    const tags = {}; cfg.categories.forEach(c => { tags[c.id] = c.tags[Math.floor(r() * c.tags.length)].id; });
+    const k = Object.values(tags).join('|'); if (seen.has(k)) continue; seen.add(k);
+    const p = { id: 'd' + (out.length + 1), tags }; p.url = nailSvg(p); out.push(p);
+  }
+  return out;
+}
+async function loadPhotos() {
+  const url = new URLSearchParams(location.search).get('sheet') || SHEET_CSV_URL;
+  if (url) { try { const p = await loadFromSheet(url); if (p.length >= 5) return p; toast('В таблице мало фото — показываю демо'); } catch (e) { console.error(e); toast('Не удалось загрузить таблицу — показываю демо'); } }
+  return makeDemo(DEMO_COUNT);
+}
+const byId = id => photos.find(p => p.id === id);
+
+/* ================= ЭКРАНЫ ================= */
+const catsTotal = () => cfg.categories.length;
+const wonCount = () => Object.keys(st.won).length;
+function header() {
+  return `<div class="top"><span>Вкус определён: ${wonCount()}/${catsTotal()}</span><div class="bar"><i style="width:${100 * wonCount() / catsTotal()}%"></i></div></div>`;
+}
+function screenStart() {
+  const resume = st.swipes > 0;
+  app.innerHTML = `<div class="center"><div style="font-size:56px">💅</div><h1>Подберём твой маникюр</h1>
+    <p>Смахивай вправо ♥, если нравится, и влево ✕, если нет. Несколько свайпов — и мы поймём твой вкус.</p>
+    <div class="col" style="width:100%"><button class="btn" id="go">${resume ? 'Продолжить' : 'Начать'}</button>
+    ${resume ? '<button class="btn sec" id="again">Начать сначала</button>' : ''}</div></div>`;
+  document.getElementById('go').onclick = step;
+  const a = document.getElementById('again'); if (a) a.onclick = restart;
+}
+function restart() { st = E.createState(); saveState(); selectedPhoto = null; step(); }
+
+function screenSingle(card) {
+  app.innerHTML = header() + `<div class="stage"><div class="card" id="card"><img src="${card.photo.url}" alt=""><div class="stamp y">НРАВИТСЯ</div><div class="stamp n">НЕТ</div></div></div>
+    <div class="btns"><button class="round n" id="no">✕</button><button class="round y" id="yes">♥</button></div>
+    <div style="text-align:center"><button class="link" id="again">Начать сначала</button></div>`;
+  const el = document.getElementById('card'), sy = el.querySelector('.y'), sn = el.querySelector('.n');
+  let x0 = null, dx = 0;
+  const fly = ans => {
+    if (busy) return; busy = true; el.classList.remove('drag');
+    el.style.transform = `translateX(${ans === 'like' ? 700 : -700}px) rotate(${ans === 'like' ? 25 : -25}deg)`;
+    setTimeout(() => { E.answer(st, card, ans, photos, cfg); saveState(); busy = false; step(); }, 220);
+  };
+  el.onpointerdown = e => { x0 = e.clientX; el.setPointerCapture(e.pointerId); el.classList.add('drag'); };
+  el.onpointermove = e => {
+    if (x0 === null) return; dx = e.clientX - x0;
+    el.style.transform = `translateX(${dx}px) rotate(${dx / 18}deg)`;
+    sy.style.opacity = Math.min(1, Math.max(0, dx / 90)); sn.style.opacity = Math.min(1, Math.max(0, -dx / 90));
+  };
+  el.onpointerup = () => {
+    if (x0 === null) return; x0 = null; el.classList.remove('drag');
+    if (dx > 90) fly('like'); else if (dx < -90) fly('dislike');
+    else { el.style.transform = ''; sy.style.opacity = sn.style.opacity = 0; }
+    dx = 0;
+  };
+  document.getElementById('yes').onclick = () => fly('like');
+  document.getElementById('no').onclick = () => fly('dislike');
+  document.getElementById('again').onclick = restart;
+}
+function screenDuel(card) {
+  app.innerHTML = header() + `<h2 style="text-align:center;margin-top:10px">Что тебе ближе?</h2>
+    <div class="duel"><div class="opt" id="a"><img src="${card.a.url}" alt=""></div><div class="opt" id="b"><img src="${card.b.url}" alt=""></div></div>`;
+  const pick = ans => { if (busy) return; busy = true; E.answer(st, card, ans, photos, cfg); saveState(); busy = false; step(); };
+  document.getElementById('a').onclick = () => pick('a');
+  document.getElementById('b').onclick = () => pick('b');
+}
+function screenResult() {
+  const res = E.results(st, photos, cfg), won = Object.entries(st.won).filter(([, t]) => t !== E.NONE);
+  if (!selectedPhoto || !res.find(x => x.photo.id === selectedPhoto)) selectedPhoto = res[0] ? res[0].photo.id : null;
+  const chips = won.map(([, t]) => `<span class="tag">${esc(tagName(t))}</span>`).join('');
+  app.innerHTML = `<h2>Твой вайб ✨</h2><div class="tags" style="padding:4px 0">${chips}</div>
+    <div class="grid">${res.map(x => `<div class="item ${x.photo.id === selectedPhoto ? 'sel' : ''}" data-id="${esc(x.photo.id)}"><img src="${x.photo.url}" alt="">
+      <div class="tags">${Object.values(x.photo.tags).map(t => `<span class="tag">${esc(tagName(t))}</span>`).join('')}</div></div>`).join('')}</div>
+    <div class="col"><button class="btn" id="book" ${selectedPhoto ? '' : 'disabled'}>Хочу такое — записаться</button>
+    <button class="btn sec" id="nope">Не то</button><button class="link" id="again">Начать сначала</button></div>`;
+  app.querySelectorAll('.item').forEach(i => i.onclick = () => { selectedPhoto = i.dataset.id; screenResult(); });
+  document.getElementById('book').onclick = book;
+  document.getElementById('nope').onclick = screenReject;
+  document.getElementById('again').onclick = restart;
+}
+function screenReject() {
+  const won = Object.entries(st.won).filter(([, t]) => t !== E.NONE); const sel = new Set();
+  app.innerHTML = `<div class="center" style="justify-content:flex-start;padding-top:24px"><h2>Что не понравилось?</h2><p>Отметь одно или несколько — мы подберём заново без этого.</p>
+    <div class="chips">${won.map(([, t]) => `<div class="chip" data-t="${esc(t)}">${esc(tagName(t))}</div>`).join('')}</div>
+    <div class="col" style="width:100%"><button class="btn" id="redo" disabled>Подобрать заново</button><button class="btn sec" id="back">Назад</button></div></div>`;
+  const redo = document.getElementById('redo');
+  app.querySelectorAll('.chip').forEach(c => c.onclick = () => { const t = c.dataset.t; if (sel.has(t)) { sel.delete(t); c.classList.remove('sel'); } else { sel.add(t); c.classList.add('sel'); } redo.disabled = !sel.size; });
+  redo.onclick = () => { E.reject(st, [...sel], cfg); saveState(); selectedPhoto = null; step(); };
+  document.getElementById('back').onclick = screenResult;
+}
+function book() {
+  const p = byId(selectedPhoto); if (!p) return;
+  const payload = { action: 'book', photo_id: p.id, photo_url: p.url.startsWith('data:') ? '(демо)' : p.url,
+    tags: Object.fromEntries(Object.entries(p.tags).map(([c, t]) => [c, tagName(t)])) };
+  if (tg && tg.sendData) { try { tg.sendData(JSON.stringify(payload)); return; } catch (e) {} }
+  toast('Запись подключим на следующем этапе. Выбрано: ' + Object.values(payload.tags).join(', '));
+}
+
+/* ================= ГЛАВНЫЙ ЦИКЛ ================= */
+function step() {
+  const card = E.nextCard(st, photos, cfg); saveState();
+  if (card.type === 'single') screenSingle(card);
+  else if (card.type === 'duel') screenDuel(card);
+  else screenResult();
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight') { const b = document.getElementById('yes'); if (b) b.click(); }
+  if (e.key === 'ArrowLeft') { const b = document.getElementById('no'); if (b) b.click(); }
+});
+(async function init() {
+  app.innerHTML = '<div class="center"><p>Загружаем маникюры…</p></div>';
+  photos = await loadPhotos();
+  st = await loadState();
+  if (!st || E.isExpired(st, cfg)) st = E.createState(); // автосброс после resetDays без захода
+  st.lastActive = Date.now(); saveState();
+  screenStart();
+})();
+})();
+</script>
+</body>
+</html>
