@@ -42,6 +42,13 @@ h1{font-size:24px;margin:8px 0}h2{font-size:20px;margin:4px 0 2px}p{margin:6px 0
 .chip{padding:10px 16px;border-radius:20px;background:var(--card);border:2px solid transparent;font-size:15px;cursor:pointer}
 .chip.sel{border-color:var(--no);color:var(--no)}
 .col{display:flex;flex-direction:column;gap:8px}
+.tabs,.seg{display:flex;gap:6px;overflow-x:auto;padding:8px 0;flex-shrink:0}.tab{border:0;border-radius:14px;padding:8px 12px;font-size:13px;background:var(--card);color:var(--text);white-space:nowrap;cursor:pointer}.tab.on{background:var(--btn);color:var(--btntext)}
+.apane{flex:1;overflow:auto;min-height:0}.apane h3{font-size:15px;margin:14px 0 4px}
+.row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;margin:4px 0;background:var(--card);border-radius:12px;font-size:14px}
+.row small{display:block;color:var(--hint);font-size:12px;margin-top:2px}.row.click{cursor:pointer}.row input,.row select,.prow select{background:var(--bg);color:var(--text);border:1px solid var(--card);border-radius:8px;padding:6px;font-size:13px;max-width:45%}.row input{width:90px}
+.kpis{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0}.kpi{background:var(--card);border-radius:14px;padding:12px}.kpi b{display:block;font-size:22px}.kpi span{font-size:12px;color:var(--hint)}
+.prow{display:flex;gap:10px;background:var(--card);border-radius:14px;padding:8px;margin:8px 0}.prow img{width:84px;height:112px;object-fit:cover;border-radius:10px;flex-shrink:0}
+.pf{flex:1;display:flex;flex-direction:column;gap:5px;min-width:0}.pf select{max-width:100%;width:100%}.pb{display:flex;gap:6px}.btn.sm{padding:8px 10px;font-size:13px;border-radius:10px}
 .toast{position:fixed;left:16px;right:16px;bottom:24px;background:var(--text);color:var(--bg);padding:12px 16px;border-radius:12px;font-size:14px;z-index:9;word-break:break-word}
 </style>
 </head>
@@ -232,20 +239,32 @@ const CONFIG = {"categories": [{"id": "shape", "name": "Форма", "tags": [{"
 // Ссылка на опубликованную Google Таблицу (Файл → Поделиться → Опубликовать → CSV). Пока пусто — работает демо.
 // Колонки: id | ссылка | <названия категорий: Форма, Цвет, Дизайн...> | статус (ок / на проверку)
 const SHEET_CSV_URL = '';
+// Адрес моста (Google Apps Script → Развернуть → Веб-приложение, ссылка вида https://script.google.com/macros/s/.../exec).
+// Адрес не секретный: без подписи Telegram мост ничего не отдаёт. Пока пусто — работает демо без бота.
+const API_URL = 'https://script.google.com/macros/s/AKfycbxuPO2anuZTwJ6hSqW2fDemiv2lsJm9AY7aAgRcQ0xZD1bib6crEGFcRxsQJrEeZ4NW/exec';
 const DEMO_COUNT = 60;
 const STORAGE_KEY = 'nail_state_v1';
 
-const E = window.NailEngine, cfg = CONFIG;
+const E = window.NailEngine; let cfg = CONFIG;
 const tg = window.Telegram && window.Telegram.WebApp;
 if (tg) { try { tg.ready(); tg.expand(); } catch (e) {} }
 const app = document.getElementById('app');
-let photos = [], st = null, busy = false, selectedPhoto = null;
+let photos = [], st = null, busy = false, selectedPhoto = null, isAdmin = false, lastTracked = '';
 
 /* ================= УТИЛИТЫ ================= */
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const tagName = id => { for (const c of cfg.categories) for (const t of c.tags) if (t.id === id) return t.name; return id; };
 function toast(msg) { const d = document.createElement('div'); d.className = 'toast'; d.textContent = msg; document.body.appendChild(d); setTimeout(() => d.remove(), 4500); }
 function mulberry(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+/* ================= МОСТ (Google Apps Script) ================= */
+async function api(action, payload) {
+  const res = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, redirect: 'follow',
+    body: JSON.stringify({ action, payload: payload || {}, initData: tg ? tg.initData : '' }) });
+  return res.json();
+}
+async function A(action, payload) { const r = await api(action, payload); if (!r.ok) throw new Error(r.error || 'ошибка'); return r; }
+function track(type, data) { if (API_URL) api('event', { type, data }).catch(() => {}); }
 
 /* ================= ХРАНИЛИЩЕ СОСТОЯНИЯ ================= */
 function loadState() {
@@ -370,14 +389,16 @@ function screenStart() {
   app.innerHTML = `<div class="center"><div style="font-size:56px">💅</div><h1>Подберём твой маникюр</h1>
     <p>Смахивай вправо ♥, если нравится, и влево ✕, если нет. Несколько свайпов — и мы поймём твой вкус.</p>
     <div class="col" style="width:100%"><button class="btn" id="go">${resume ? 'Продолжить' : 'Начать'}</button>
-    ${resume ? '<button class="btn sec" id="again">Начать сначала</button>' : ''}</div></div>`;
+    ${resume ? '<button class="btn sec" id="again">Начать сначала</button>' : ''}
+    ${isAdmin ? '<button class="link" id="adm">⚙ Админка</button>' : ''}</div></div>`;
   document.getElementById('go').onclick = step;
   const a = document.getElementById('again'); if (a) a.onclick = restart;
+  const ad = document.getElementById('adm'); if (ad) ad.onclick = () => screenAdmin('stats');
 }
 function restart() { st = E.createState(); saveState(); selectedPhoto = null; step(); }
 
 function screenSingle(card) {
-  app.innerHTML = header() + `<div class="stage"><div class="card" id="card"><img src="${card.photo.url}" alt=""><div class="stamp y">НРАВИТСЯ</div><div class="stamp n">НЕТ</div></div></div>
+  app.innerHTML = header() + `<div class="stage"><div class="card" id="card"><img src="${esc(card.photo.url)}" alt=""><div class="stamp y">НРАВИТСЯ</div><div class="stamp n">НЕТ</div></div></div>
     <div class="btns"><button class="round n" id="no">✕</button><button class="round y" id="yes">♥</button></div>
     <div style="text-align:center"><button class="link" id="again">Начать сначала</button></div>`;
   const el = document.getElementById('card'), sy = el.querySelector('.y'), sn = el.querySelector('.n');
@@ -405,7 +426,7 @@ function screenSingle(card) {
 }
 function screenDuel(card) {
   app.innerHTML = header() + `<h2 style="text-align:center;margin-top:10px">Что тебе ближе?</h2>
-    <div class="duel"><div class="opt" id="a"><img src="${card.a.url}" alt=""></div><div class="opt" id="b"><img src="${card.b.url}" alt=""></div></div>`;
+    <div class="duel"><div class="opt" id="a"><img src="${esc(card.a.url)}" alt=""></div><div class="opt" id="b"><img src="${esc(card.b.url)}" alt=""></div></div>`;
   const pick = ans => { if (busy) return; busy = true; E.answer(st, card, ans, photos, cfg); saveState(); busy = false; step(); };
   document.getElementById('a').onclick = () => pick('a');
   document.getElementById('b').onclick = () => pick('b');
@@ -413,9 +434,11 @@ function screenDuel(card) {
 function screenResult() {
   const res = E.results(st, photos, cfg), won = Object.entries(st.won).filter(([, t]) => t !== E.NONE);
   if (!selectedPhoto || !res.find(x => x.photo.id === selectedPhoto)) selectedPhoto = res[0] ? res[0].photo.id : null;
+  const tkey = JSON.stringify(st.won) + st.blacklist.length;
+  if (tkey !== lastTracked) { lastTracked = tkey; track('result', { swipes: st.swipes, won: Object.fromEntries(won), photos: res.map(x => x.photo.id) }); }
   const chips = won.map(([, t]) => `<span class="tag">${esc(tagName(t))}</span>`).join('');
   app.innerHTML = `<h2>Твой вайб ✨</h2><div class="tags" style="padding:4px 0">${chips}</div>
-    <div class="grid">${res.map(x => `<div class="item ${x.photo.id === selectedPhoto ? 'sel' : ''}" data-id="${esc(x.photo.id)}"><img src="${x.photo.url}" alt="">
+    <div class="grid">${res.map(x => `<div class="item ${x.photo.id === selectedPhoto ? 'sel' : ''}" data-id="${esc(x.photo.id)}"><img src="${esc(x.photo.url)}" alt="">
       <div class="tags">${Object.values(x.photo.tags).map(t => `<span class="tag">${esc(tagName(t))}</span>`).join('')}</div></div>`).join('')}</div>
     <div class="col"><button class="btn" id="book" ${selectedPhoto ? '' : 'disabled'}>Хочу такое — записаться</button>
     <button class="btn sec" id="nope">Не то</button><button class="link" id="again">Начать сначала</button></div>`;
@@ -424,6 +447,11 @@ function screenResult() {
   document.getElementById('nope').onclick = screenReject;
   document.getElementById('again').onclick = restart;
 }
+function screenBooked() {
+  app.innerHTML = `<div class="center"><div style="font-size:56px">✅</div><h1>Заявка отправлена</h1><p>Мастер получил ваш выбор и свяжется с вами, чтобы согласовать время.</p>
+    <div class="col" style="width:100%"><button class="btn sec" id="back">Вернуться к подборке</button></div></div>`;
+  document.getElementById('back').onclick = screenResult;
+}
 function screenReject() {
   const won = Object.entries(st.won).filter(([, t]) => t !== E.NONE); const sel = new Set();
   app.innerHTML = `<div class="center" style="justify-content:flex-start;padding-top:24px"><h2>Что не понравилось?</h2><p>Отметь одно или несколько — мы подберём заново без этого.</p>
@@ -431,16 +459,101 @@ function screenReject() {
     <div class="col" style="width:100%"><button class="btn" id="redo" disabled>Подобрать заново</button><button class="btn sec" id="back">Назад</button></div></div>`;
   const redo = document.getElementById('redo');
   app.querySelectorAll('.chip').forEach(c => c.onclick = () => { const t = c.dataset.t; if (sel.has(t)) { sel.delete(t); c.classList.remove('sel'); } else { sel.add(t); c.classList.add('sel'); } redo.disabled = !sel.size; });
-  redo.onclick = () => { E.reject(st, [...sel], cfg); saveState(); selectedPhoto = null; step(); };
+  redo.onclick = () => { track('reject', { tags: [...sel] }); E.reject(st, [...sel], cfg); saveState(); selectedPhoto = null; step(); };
   document.getElementById('back').onclick = screenResult;
 }
-function book() {
+async function book() {
   const p = byId(selectedPhoto); if (!p) return;
+  if (API_URL) {
+    const b = document.getElementById('book'); b.disabled = true; b.textContent = 'Отправляем…';
+    try { await A('book', { photo_id: p.id }); screenBooked(); }
+    catch (e) { toast('Не удалось отправить заявку: ' + e.message); b.disabled = false; b.textContent = 'Хочу такое — записаться'; }
+    return;
+  }
   const payload = { action: 'book', photo_id: p.id, photo_url: p.url.startsWith('data:') ? '(демо)' : p.url,
     tags: Object.fromEntries(Object.entries(p.tags).map(([c, t]) => [c, tagName(t)])) };
   if (tg && tg.sendData) { try { tg.sendData(JSON.stringify(payload)); return; } catch (e) {} }
   toast('Запись подключим на следующем этапе. Выбрано: ' + Object.values(payload.tags).join(', '));
 }
+
+
+/* ================= АДМИНКА (данные отдаёт мост только админам) ================= */
+const fmtDate = ms => ms ? new Date(ms).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—';
+const pct = x => Math.round(100 * (x || 0)) + '%';
+const userLabel = o => esc((o['Имя'] || '') + (o['Username'] ? ' @' + o['Username'] : '') || o.tg_id);
+const TABS = [['stats', '📊 Статистика'], ['clients', '👥 Клиенты'], ['bookings', '📅 Записи'], ['photos', '🖼 Фото'], ['log', '🧾 Лог'], ['settings', '⚙ Настройки']];
+async function screenAdmin(tab) {
+  tab = tab || 'stats';
+  app.innerHTML = `<div class="top"><button class="link" id="aback">← Назад</button><b style="color:var(--text)">Админка</b></div>
+    <div class="tabs">${TABS.map(([k, n]) => `<button class="tab ${k === tab ? 'on' : ''}" data-k="${k}">${n}</button>`).join('')}</div><div class="apane" id="apane"><p>Загрузка…</p></div>`;
+  document.getElementById('aback').onclick = screenStart;
+  app.querySelectorAll('.tab').forEach(b => b.onclick = () => screenAdmin(b.dataset.k));
+  const pane = document.getElementById('apane');
+  try { await ADMIN[tab](pane); } catch (e) { pane.innerHTML = '<p>Ошибка: ' + esc(e.message) + '</p>'; }
+}
+const ADMIN = {
+  async stats(pane, days) {
+    days = days === undefined ? 30 : days; const s = (await A('admin_stats', { days })).stats;
+    const list = (arr, f) => arr.length ? arr.map(x => `<div class="row"><span>${esc(f ? f(x.name) : x.name)}</span><b>${x.n}</b></div>`).join('') : '<p>Пока нет данных</p>';
+    pane.innerHTML = `<div class="seg">${[[7, '7 дней'], [30, '30 дней'], [0, 'Всё время']].map(([d, n]) => `<button class="tab ${d === days ? 'on' : ''}" data-d="${d}">${n}</button>`).join('')}</div>
+      <div class="kpis">${[['Клиентов', s.users], ['Сессий', s.sessions], ['Дошли до результата', pct(s.completion)], ['Свайпов до результата', s.avgSwipes.toFixed(1)], ['Заявок', s.bookings], ['Конверсия в заявку', pct(s.conversion)]]
+        .map(([n, v]) => `<div class="kpi"><b>${v}</b><span>${n}</span></div>`).join('')}</div>
+      <h3>Популярные теги</h3>${list(s.topTags)}<h3>Чаще отвергают</h3>${list(s.topRejected)}<h3>Чаще выбирают (заявки, id фото)</h3>${list(s.bookedPhotos)}`;
+    pane.querySelectorAll('[data-d]').forEach(b => b.onclick = () => ADMIN.stats(pane, Number(b.dataset.d)));
+  },
+  async clients(pane) {
+    const cl = (await A('admin_clients')).clients;
+    pane.innerHTML = cl.length ? cl.map(c => `<div class="row click" data-id="${esc(c.tg_id)}"><span>${userLabel(c)}<small>сессий ${c['Сессий']}, заявок ${c['Записей']} · ${fmtDate(c['Последний заход'])}</small></span><b>›</b></div>`).join('') : '<p>Клиентов пока нет</p>';
+    pane.querySelectorAll('.click').forEach(r => r.onclick = () => ADMIN.client(pane, r.dataset.id));
+  },
+  async client(pane, id) {
+    const r = await A('admin_client', { id }), c = r.client || {};
+    pane.innerHTML = `<button class="link" id="cb">← К списку</button><h3>${userLabel(c)}</h3><p>tg id ${esc(c.tg_id)} · первый заход ${fmtDate(c['Первый заход'])}<br>Последний результат: ${esc(c['Последний результат'] || '—')}</p>
+      ${r.bookings.length ? '<h3>Заявки</h3>' + r.bookings.map(b => `<div class="row"><span>${esc(b['Теги'])}<small>${fmtDate(b['Время'])}</small></span><b>${esc(b['Статус'])}</b></div>`).join('') : ''}
+      <h3>История</h3>${r.events.map(e => `<div class="row"><span>${esc(e.type)}<small>${esc(JSON.stringify(e.data)).slice(0, 120)}</small></span><small>${fmtDate(e.ts)}</small></div>`).join('')}`;
+    document.getElementById('cb').onclick = () => ADMIN.clients(pane);
+  },
+  async bookings(pane) {
+    const bk = (await A('admin_bookings')).bookings, ST = ['новая', 'подтверждена', 'выполнена', 'отмена'];
+    pane.innerHTML = bk.length ? bk.map(b => `<div class="row"><span>${userLabel(b)}<small>${esc(b['Теги'])} · ${fmtDate(b['Время'])}</small></span>
+      <select data-row="${b._row}">${ST.map(x => `<option ${x === b['Статус'] ? 'selected' : ''}>${x}</option>`).join('')}</select></div>`).join('') : '<p>Заявок пока нет</p>';
+    pane.querySelectorAll('select').forEach(sel => sel.onchange = async () => { try { await A('admin_booking_status', { row: Number(sel.dataset.row), status: sel.value }); toast('Статус обновлён'); } catch (e) { toast(e.message); } });
+  },
+  async photos(pane) {
+    const r = await A('admin_photos'), conf = r.config, ST = ['ок', 'на проверку'];
+    pane.innerHTML = `<p>Фото: ${r.photos.length}. В приложении видны только со статусом «ок».</p>` + r.photos.map(p => `<div class="prow" data-id="${esc(p.id)}"><img src="${esc(p.url)}" alt="">
+      <div class="pf">${conf.categories.map(c => `<select data-c="${esc(c.id)}"><option value="">${esc(c.name)}: —</option>${c.tags.map(t => `<option value="${esc(t.id)}" ${p.tags[c.id] === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>`).join('')}
+      <select data-st>${ST.map(x => `<option ${x === p.status ? 'selected' : ''}>${x}</option>`).join('')}${ST.includes(p.status) ? '' : `<option selected>${esc(p.status)}</option>`}</select>
+      <div class="pb"><button class="btn sm" data-save>Сохранить</button><button class="btn sm sec" data-del>Удалить</button></div></div></div>`).join('');
+    pane.querySelectorAll('.prow').forEach(row => {
+      const id = row.dataset.id;
+      row.querySelector('[data-save]').onclick = async () => {
+        const tags = {}; row.querySelectorAll('select[data-c]').forEach(s => { tags[s.dataset.c] = s.value; });
+        try { await A('admin_photo_set', { id, tags, status: row.querySelector('[data-st]').value }); toast('Сохранено'); } catch (e) { toast(e.message); }
+      };
+      row.querySelector('[data-del]').onclick = async () => {
+        if (!confirm('Удалить фото ' + id + ' из таблицы?')) return;
+        try { await A('admin_photo_delete', { id }); row.remove(); } catch (e) { toast(e.message); }
+      };
+    });
+  },
+  async log(pane, type) {
+    const ev = (await A('admin_log', { type: type || '', limit: 100 })).events, T = ['', 'session_start', 'result', 'reject', 'book'];
+    pane.innerHTML = `<div class="seg">${T.map(t => `<button class="tab ${t === (type || '') ? 'on' : ''}" data-t="${t}">${t || 'все'}</button>`).join('')}</div>` +
+      (ev.map(e => `<div class="row"><span>${esc(e.type)} · ${esc(e.username ? '@' + e.username : e.tg_id)}<small>${esc(JSON.stringify(e.data)).slice(0, 140)}</small></span><small>${fmtDate(e.ts)}</small></div>`).join('') || '<p>Пусто</p>');
+    pane.querySelectorAll('[data-t]').forEach(b => b.onclick = () => ADMIN.log(pane, b.dataset.t));
+  },
+  async settings(pane) {
+    const p = (await A('admin_settings_get')).params;
+    const L = { threshold: 'Порог баллов', margin: 'Нужный отрыв от второго тега', likeWeight: 'Вес лайка', dislikeWeight: 'Вес дизлайка', resultCount: 'Фото в результате', maxSwipes: 'Максимум свайпов', resetDays: 'Автосброс (дней без захода)' };
+    pane.innerHTML = Object.keys(L).map(k => `<label class="row"><span>${L[k]}</span><input type="number" step="any" data-k="${k}" value="${esc(p[k])}"></label>`).join('') +
+      '<p>Категории и теги меняются в листе «Категории» таблицы.</p><button class="btn" id="ssave">Сохранить</button>';
+    document.getElementById('ssave').onclick = async () => {
+      const params = {}; pane.querySelectorAll('input[data-k]').forEach(i => { params[i.dataset.k] = Number(i.value); });
+      try { await A('admin_settings_set', { params }); toast('Сохранено. Клиенты получат новые настройки при следующем открытии.'); } catch (e) { toast(e.message); }
+    };
+  }
+};
 
 /* ================= ГЛАВНЫЙ ЦИКЛ ================= */
 function step() {
@@ -455,10 +568,19 @@ document.addEventListener('keydown', e => {
 });
 (async function init() {
   app.innerHTML = '<div class="center"><p>Загружаем маникюры…</p></div>';
-  photos = await loadPhotos();
+  if (API_URL) {
+    if (!(tg && tg.initData)) { app.innerHTML = '<div class="center"><div style="font-size:48px">📱</div><h2>Откройте приложение в Telegram</h2><p>Эта страница работает только внутри бота.</p></div>'; return; }
+    try {
+      const r = await A('catalog'); cfg = r.config; photos = r.photos; isAdmin = !!r.isAdmin;
+      if (photos.length < 5 && !isAdmin) throw new Error('база фото пока пуста');
+    } catch (e) {
+      app.innerHTML = '<div class="center"><h2>Не удалось загрузить</h2><p>' + esc(e.message) + '</p><button class="btn" onclick="location.reload()">Повторить</button></div>'; return;
+    }
+  } else photos = await loadPhotos();
   st = await loadState();
   if (!st || E.isExpired(st, cfg)) st = E.createState(); // автосброс после resetDays без захода
   st.lastActive = Date.now(); saveState();
+  track('session_start', { resumed: st.swipes > 0 });
   screenStart();
 })();
 })();
